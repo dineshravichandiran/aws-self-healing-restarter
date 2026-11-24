@@ -1,0 +1,78 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Restarts an ECS service when a named CloudWatch alarm goes into ALARM.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: ECS cluster that runs the service.
+  ServiceName:
+    Type: String
+    Description: ECS service to restart.
+  AlarmNames:
+    Type: CommaDelimitedList
+    Description: CloudWatch alarm names that may trigger a restart, for example myapp-slo-page-fast.
+  CooldownSeconds:
+    Type: Number
+    Default: 600
+    MinValue: 60
+    Description: Do not restart if the current deployment is newer than this.
+  DryRun:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: When true the function only logs what it would do. Switch to false after watching a few runs.
+
+Resources:
+  RestarterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AWS::StackName}-restarter"
+      RetentionInDays: 14
+
+  RestarterFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-restarter"
+      CodeUri: src/
+      Handler: handler.lambda_handler
+      Runtime: python3.12
+      Architectures: [arm64]
+      Timeout: 30
+      MemorySize: 128
+      ReservedConcurrentExecutions: 1
+      LoggingConfig:
+        LogGroup: !Ref RestarterLogGroup
+      EventInvokeConfig:
+        MaximumRetryAttempts: 1
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref ClusterName
+          SERVICE_NAME: !Ref ServiceName
+          COOLDOWN_SECONDS: !Ref CooldownSeconds
+          DRY_RUN: !Ref DryRun
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - ecs:DescribeServices
+                - ecs:UpdateService
+              Resource: !Sub "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:service/${ClusterName}/${ServiceName}"
+      Events:
+        AlarmFired:
+          Type: CloudWatchEvent
+          Properties:
+            Pattern:
+              source: [aws.cloudwatch]
+              detail-type: ["CloudWatch Alarm State Change"]
+              detail:
+                alarmName: !Ref AlarmNames
+                state:
+                  value: [ALARM]
+
+Outputs:
+  FunctionName:
+    Value: !Ref RestarterFunction
+  LogGroupName:
+    Value: !Ref RestarterLogGroup
